@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoConfig
-from transformers import BertPreTrainedModel, BertModel
+from transformers import BertPreTrainedModel, BertModel, BertForPreTraining
 from transformers import AdamW, get_scheduler
 from tqdm.auto import tqdm
 
@@ -25,8 +25,15 @@ def seed_everything(seed=1029):
     torch.backends.cudnn.deterministic = True
 
 class AFQMC(Dataset):
-    def __init__(self, data_file):
-        self.data = self.load_data(data_file)
+    def __init__(self, options, mode):
+        if mode == 'Train':
+            self.data = self.load_data('%s/train.json'%options.data_path)
+        elif mode == 'Valid':
+            self.data = self.load_data('%s/dev.json'%options.data_path)
+        elif mode == 'Test':
+            self.data = self.load_data('%s/dev.json'%options.data_path) # use dev.json temporarily
+        else:
+            raise Exception('[INFO] Invalid dataset type')
     
     def load_data(self, data_file):
         Data = {}
@@ -42,7 +49,7 @@ class AFQMC(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-def collote_fn(batch_samples):
+def collote_fn(batch_samples, tokenizer):
     batch_sentence_1, batch_sentence_2 = [], []
     batch_label = []
     for sample in batch_samples:
@@ -50,8 +57,8 @@ def collote_fn(batch_samples):
         batch_sentence_2.append(sample['sentence2'])
         batch_label.append(int(sample['label']))
     X = tokenizer(
-        batch_sentence_1, 
-        batch_sentence_2, 
+        batch_sentence_1, # if only encode batch_sentence_1, then X['input_ids'].shape=[b, 54]
+        batch_sentence_2, # if encode both, then X['input_ids'].shape=[b, 117]
         padding=True, # 补全
         truncation=True, # 裁剪
         return_tensors="pt" # 意为返回pytorch tensor
@@ -65,8 +72,8 @@ class BertForPairwiseCLS(BertPreTrainedModel):
         self.bert = BertModel(config, add_pooling_layer=False)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         # self.classifier = nn.Linear(768, 2)
-        self.classifier = [nn.Linear(768, 384), nn.ReLU(), nn.Linear(384, 384), 
-            nn.ReLU(), nn.Linear(384, 2)]
+        self.classifier = [nn.Linear(768, 768), nn.ReLU(), nn.Linear(768, 768), 
+            nn.ReLU(), nn.Linear(768, 2)]
         self.classifier = nn.Sequential(*self.classifier)
         self.post_init()
     
@@ -107,6 +114,7 @@ def test_loop(options, dataloader, model, mode='Test'):
     if mode == 'Test':
         ckpts = sorted(os.listdir(options.save_path))
         model.load_state_dict(torch.load('%s/%s'%(options.save_path, ckpts[-1])))
+        print('[INFO] Load %s ckpt for test'%ckpts[-1])
     model.eval()
     with torch.no_grad():
         for X, y in dataloader:
@@ -150,19 +158,19 @@ if __name__ == '__main__':
     checkpoint = options.base_model_ckpt
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
-    train_data = AFQMC('%s/train.json'%options.data_path)
-    valid_data = AFQMC('%s/dev.json'%options.data_path)
-    test_data = AFQMC('%s/test.json'%options.data_path)
+    train_data = AFQMC(options, mode='Train')
+    valid_data = AFQMC(options, mode='Valid')
+    test_data = AFQMC(options, mode='Test')
 
-    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=collote_fn)
-    valid_dataloader= DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=collote_fn)
-    test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=collote_fn)
+    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=lambda x: collote_fn(x, tokenizer))
+    valid_dataloader= DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
+    test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
 
     config = AutoConfig.from_pretrained(checkpoint)
     model = BertForPairwiseCLS.from_pretrained(checkpoint, config=config).to(device)
 
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=learning_rate)
+    optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.99), eps=1e-15)
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
