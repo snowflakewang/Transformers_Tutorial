@@ -18,30 +18,22 @@ def seed_everything(seed=1029):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f'Using {device} device')
-seed_everything(42)
-
-max_dataset_size = 220000
-train_set_size = 200000
-valid_set_size = 20000
-
-max_input_length = 128
-max_target_length = 128
-
-batch_size = 32
-learning_rate = 1e-5
-epoch_num = 3
-
 class TRANS(Dataset):
-    def __init__(self, data_file):
-        self.data = self.load_data(data_file)
+    def __init__(self, options, mode):
+        if mode == 'train':
+            self.data = self.load_data('%s/translation2019zh_train.json'%options.data_path)
+        elif mode == 'test':
+            self.data = self.load_data('%s/translation2019zh_valid.json'%options.data_path)
+        else:
+            raise Exception('[INFO] Invalid dataset type')
+        
+        self.options = options
     
     def load_data(self, data_file):
         Data = {}
         with open(data_file, 'rt', encoding='utf-8') as f:
             for idx, line in enumerate(f):
-                if idx >= max_dataset_size:
+                if idx >= options.max_dataset_size:
                     break
                 sample = json.loads(line.strip())
                 Data[idx] = sample
@@ -53,16 +45,7 @@ class TRANS(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-data = TRANS('data/translation2019zh/translation2019zh_train.json')
-train_data, valid_data = random_split(data, [train_set_size, valid_set_size])
-test_data = TRANS('data/translation2019zh/translation2019zh_valid.json')
-
-model_checkpoint = "Helsinki-NLP/opus-mt-zh-en"
-tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
-model = model.to(device)
-
-def collote_fn(batch_samples):
+def collote_fn(batch_samples, tokenizer):
     batch_inputs, batch_targets = [], []
     for sample in batch_samples:
         batch_inputs.append(sample['chinese'])
@@ -70,7 +53,7 @@ def collote_fn(batch_samples):
     batch_data = tokenizer(
         batch_inputs, 
         padding=True, 
-        max_length=max_input_length,
+        max_length=options.max_input_length,
         truncation=True, 
         return_tensors="pt"
     )
@@ -78,7 +61,7 @@ def collote_fn(batch_samples):
         labels = tokenizer(
             batch_targets, 
             padding=True, 
-            max_length=max_target_length,
+            max_length=options.max_target_length,
             truncation=True, 
             return_tensors="pt"
         )["input_ids"]
@@ -88,10 +71,6 @@ def collote_fn(batch_samples):
             labels[idx][end_idx+1:] = -100
         batch_data['labels'] = labels
     return batch_data
-
-train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=collote_fn)
-valid_dataloader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=collote_fn)
-test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=collote_fn)
 
 def train_loop(dataloader, model, optimizer, lr_scheduler, epoch, total_loss):
     progress_bar = tqdm(range(len(dataloader)))
@@ -140,28 +119,83 @@ def test_loop(dataloader, model):
     print(f"BLEU: {bleu_score:>0.2f}\n")
     return bleu_score
 
-optimizer = AdamW(model.parameters(), lr=learning_rate)
-lr_scheduler = get_scheduler(
-    "linear",
-    optimizer=optimizer,
-    num_warmup_steps=0,
-    num_training_steps=epoch_num*len(train_dataloader),
-)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Machine Translation')
+    parser.add_argument('--config', type=str, default=None, help='config file')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
+    parser.add_argument('--lr', type=float, default=1e-5, help='learning rate')
+    parser.add_argument('-bs', '--batch_size', type=int, default=512)
+    parser.add_argument('--max_epoch', type=int, default=10)
+    parser.add_argument('--base_model_ckpt', type=str, default='Helsinki-NLP/opus-mt-zh-en', help='ckpt for base model')
+    parser.add_argument('--data_path', type=str, default='data/translation2019zh', help='dataset path')
+    parser.add_argument('--save_path', type=str, default='model_translation_ckpts', help='path to save new ckpts')
+    options = parser.parse_args()
 
-total_loss = 0.
-best_bleu = 0.
-for t in range(epoch_num):
-    print(f"Epoch {t+1}/{epoch_num}\n-------------------------------")
-    total_loss = train_loop(train_dataloader, model, optimizer, lr_scheduler, t+1, total_loss)
-    valid_bleu = test_loop(valid_dataloader, model)
-    if valid_bleu > best_bleu:
-        best_bleu = valid_bleu
-        print('saving new weights...\n')
-        torch.save(
-            model.state_dict(), 
-            f'epoch_{t+1}_valid_bleu_{valid_bleu:0.2f}_model_weights.bin'
-        )
-print("Done!")
+    if options.config is not None:
+        data = json.load(open(options.config, 'r'))
+        for key in data:
+            options.__dict__[key] = data[key]
+
+    os.makedirs('train_model_ckpts', exist_ok=True)
+    options.save_path = 'train_model_ckpts/' + '%s_%s'%(options.save_path, options.base_model_ckpt.replace('/', '-'))
+    os.makedirs(options.save_path, exist_ok=True)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f'Using {device} device')
+    seed_everything(options.seed)
+
+    max_dataset_size = options.max_dataset_size
+
+    max_input_length = options.max_input_length
+    max_target_length = options.max_target_length
+
+    batch_size = options.batch_size
+    learning_rate = options.lr
+    epoch_num = options.max_epoch
+
+    data = TRANS(options, mode='train')
+
+    if options.train_ratio > 0 and options.train_ratio < 1:
+        train_set_size = int(options.train_ratio * data.__len__())
+    else:
+        train_set_size = int(0.9 * data.__len__())
+    valid_set_size = data.__len__() - train_set_size
+
+    train_data, valid_data = random_split(data, [train_set_size, valid_set_size])
+    test_data = TRANS(options, mode='test')
+
+    model_checkpoint = "Helsinki-NLP/opus-mt-zh-en"
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+    model = model.to(device)
+
+    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=lambda x: collote_fn(x, tokenizer))
+    valid_dataloader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
+    test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
+
+    bleu = BLEU()
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    lr_scheduler = get_scheduler(
+        "linear",
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=epoch_num*len(train_dataloader),
+    )
+
+    total_loss = 0.
+    best_bleu = 0.
+    for t in range(epoch_num):
+        print(f"Epoch {t+1}/{epoch_num}\n-------------------------------")
+        total_loss = train_loop(train_dataloader, model, optimizer, lr_scheduler, t+1, total_loss)
+        valid_bleu = test_loop(valid_dataloader, model)
+        if valid_bleu > best_bleu:
+            best_bleu = valid_bleu
+            print('saving new weights...\n')
+            torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt))
+            with open('%s/log.txt'%options.save_path, 'w') as w:
+                w.write('best checkpoint epoch: %d\n'%(t + 1))
+                w.write('best checkpoint acc: %.05f'%best_acc)
 
 # import json
 

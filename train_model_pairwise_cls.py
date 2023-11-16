@@ -176,7 +176,7 @@ def test_loop(options, dataloader, model, mode='Test'):
     return correct
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='pairwise_classification')
+    parser = argparse.ArgumentParser(description='Pairwise Classification')
     parser.add_argument('--config', type=str, default=None, help='config file')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--lr', type=float, default=1e-5, help='learning rate')

@@ -1,0 +1,13 @@
+{
+    "seed": 42,
+    "lr": 1e-5,
+    "batch_size": 128,
+    "max_epoch": 20,
+    "base_model_ckpt": "xlm-roberta-large",
+    "data_path": "data/afqmc_public",
+    "save_path": "model_pairwise_cls_ckpts",
+    "max_dataset_size": 220000,
+    "train_ratio": 0.9,
+    "max_input_length": 128,
+    "max_target_length": 128
+}
