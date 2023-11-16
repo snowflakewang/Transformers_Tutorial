@@ -1,6 +1,6 @@
 export OUTPUT_DIR=./bert_results/
 
-python3 run_simi_cls.py \
+python run_simi_cls.py \
     --output_dir=$OUTPUT_DIR \
     --model_type=bert \
     --model_checkpoint=bert-base-chinese \
