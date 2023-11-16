@@ -3,7 +3,7 @@
     "lr": 1e-5,
     "batch_size": 128,
     "max_epoch": 20,
-    "base_model_ckpt": "sentence-transformers/LaBSE",
+    "base_model_ckpt": "xlm-roberta-large",
     "data_path": "data/afqmc_public",
     "save_path": "model_pairwise_cls_ckpts"
     

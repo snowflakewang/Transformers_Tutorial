@@ -86,9 +86,9 @@ class BertForPairwiseCLS(BertPreTrainedModel):
         logits = self.classifier(cls_vectors)
         return logits
 
-class SentenceTransformer(nn.Module):
+class SentenceTransformerLaBSE(nn.Module):
     def __init__(self, checkpoint, config):
-        super().__init__()
+        super(SentenceTransformerLaBSE, self).__init__()
         self.auto_model = AutoModel.from_pretrained(checkpoint)
         self.classifier = [nn.Linear(768, 768), 
             nn.ReLU(), nn.Linear(768, 2)]
@@ -107,6 +107,23 @@ class SentenceTransformer(nn.Module):
         token_embeddings = model_output[0] #First element of model_output contains all token embeddings
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
         return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
+class XLMRoBERTa(nn.Module):
+    def __init__(self, checkpoint, config):
+        super(XLMRoBERTa, self).__init__()
+        self.auto_model = AutoModel.from_pretrained(checkpoint)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.classifier = [nn.Linear(1024, 1024), 
+            nn.ReLU(), nn.Linear(1024, 2)]
+        self.classifier = nn.Sequential(*self.classifier)
+    
+    def forward(self, x):
+        out = self.auto_model(**x)
+        embeddings = out.last_hidden_state # [b, 74, 1024]
+        embeddings = self.dropout(embeddings[:, 0, :]) # [b, 1024]
+        logits = self.classifier(embeddings)
+
+        return logits
 
 def train_loop(dataloader, model, loss_fn, optimizer, lr_scheduler, epoch, total_loss):
     progress_bar = tqdm(range(len(dataloader)))
@@ -185,7 +202,7 @@ if __name__ == '__main__':
     epoch_num = options.max_epoch
 
     checkpoint = options.base_model_ckpt
-    print('[INFO] Load %s as the base model'%options.base_model_ckpt)
+    print('[INFO] Download / Load %s as the base model'%options.base_model_ckpt)
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
     train_data = AFQMC(options, mode='Train')
@@ -200,7 +217,9 @@ if __name__ == '__main__':
     if options.base_model_ckpt == 'bert-base-chinese':
         model = BertForPairwiseCLS.from_pretrained(checkpoint, config=config).to(device)
     elif options.base_model_ckpt == 'sentence-transformers/LaBSE':
-        model = SentenceTransformer(checkpoint, config).to(device)
+        model = SentenceTransformerLaBSE(checkpoint, config).to(device)
+    elif options.base_model_ckpt == 'xlm-roberta-large':
+        model = XLMRoBERTa(checkpoint, config).to(device)
     else:
         raise Exception('[INFO] Invalid base model checkpoint')
 
