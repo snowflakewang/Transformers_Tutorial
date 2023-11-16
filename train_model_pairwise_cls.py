@@ -5,13 +5,14 @@ import json
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer, AutoConfig, AutoModel
 from transformers import BertPreTrainedModel, BertModel, BertForPreTraining
 from transformers import AdamW, get_scheduler
 from tqdm.auto import tqdm
 
 import argparse
 import pdb
+import torch.nn.functional as f
 
 def seed_everything(seed=1029):
     random.seed(seed)
@@ -85,6 +86,27 @@ class BertForPairwiseCLS(BertPreTrainedModel):
         logits = self.classifier(cls_vectors)
         return logits
 
+class SentenceTransformer(nn.Module):
+    def __init__(self, checkpoint, config):
+        super().__init__()
+        self.auto_model = AutoModel.from_pretrained(checkpoint)
+        self.classifier = [nn.Linear(768, 768), nn.ReLU(), nn.Linear(768, 768), 
+            nn.ReLU(), nn.Linear(768, 2)]
+        self.classifier = nn.Sequential(*self.classifier)
+    
+    def forward(self, x):
+        out = self.auto_model(**x)
+        sentence_embeddings = self.mean_pooling(out, x['attention_mask'])
+        sentence_embeddings = f.normalize(sentence_embeddings, p=2, dim=1) # [b, 768]
+        logits = self.classifier(sentence_embeddings)
+
+        return logits
+    
+    def mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output[0] #First element of model_output contains all token embeddings
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+
 def train_loop(dataloader, model, loss_fn, optimizer, lr_scheduler, epoch, total_loss):
     progress_bar = tqdm(range(len(dataloader)))
     progress_bar.set_description(f'loss: {0:>7f}')
@@ -113,8 +135,14 @@ def test_loop(options, dataloader, model, mode='Test'):
 
     if mode == 'Test':
         ckpts = sorted(os.listdir(options.save_path))
-        model.load_state_dict(torch.load('%s/%s'%(options.save_path, ckpts[-1])))
-        print('[INFO] Load %s ckpt for test'%ckpts[-1])
+        ckpts_dic = {}
+        for ckpt in ckpts:
+            ckpts_dic[int(ckpt.split('_')[1])] = ckpt
+        best_ckpt_id = sorted(ckpts_dic.keys())[-1]
+        ckpt = ckpts_dic[best_ckpt_id]
+
+        model.load_state_dict(torch.load('%s/%s'%(options.save_path, ckpt)))
+        print('[INFO] Load %s ckpt for test'%ckpts_dic[best_ckpt_id])
     model.eval()
     with torch.no_grad():
         for X, y in dataloader:
@@ -123,7 +151,7 @@ def test_loop(options, dataloader, model, mode='Test'):
             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
 
     correct /= size
-    print(f"{mode} Accuracy: {(100*correct):>0.1f}%\n")
+    print(f"{mode} Accuracy: {(100*correct):>0.5f}%")
     return correct
 
 if __name__ == '__main__':
@@ -144,7 +172,7 @@ if __name__ == '__main__':
             options.__dict__[key] = data[key]
 
     os.makedirs('train_model_ckpts', exist_ok=True)
-    options.save_path = 'train_model_ckpts/' + options.save_path
+    options.save_path = 'train_model_ckpts/' + '%s_%s'%(options.save_path, options.base_model_ckpt.replace('/', '-'))
     os.makedirs(options.save_path, exist_ok=True)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -156,6 +184,7 @@ if __name__ == '__main__':
     epoch_num = options.max_epoch
 
     checkpoint = options.base_model_ckpt
+    print('[INFO] Load %s as the base model'%options.base_model_ckpt)
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
     train_data = AFQMC(options, mode='Train')
@@ -167,7 +196,12 @@ if __name__ == '__main__':
     test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
 
     config = AutoConfig.from_pretrained(checkpoint)
-    model = BertForPairwiseCLS.from_pretrained(checkpoint, config=config).to(device)
+    if options.base_model_ckpt == 'bert-base-chinese':
+        model = BertForPairwiseCLS.from_pretrained(checkpoint, config=config).to(device)
+    elif options.base_model_ckpt == 'sentence-transformers/LaBSE':
+        model = SentenceTransformer(checkpoint, config).to(device)
+    else:
+        raise Exception('[INFO] Invalid base model checkpoint')
 
     loss_fn = nn.CrossEntropyLoss()
     optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.99), eps=1e-15)
