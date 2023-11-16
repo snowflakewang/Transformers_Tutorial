@@ -227,6 +227,7 @@ if __name__ == '__main__':
         raise Exception('[INFO] Invalid base model checkpoint')
 
     loss_fn = nn.CrossEntropyLoss()
+    # if only fine-tune the classifier, then just pass model.classifier.parameters() into the optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-8)
     lr_scheduler = get_scheduler(
         "linear",
