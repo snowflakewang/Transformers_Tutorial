@@ -146,4 +146,4 @@ dmypy.json
 
 # user specific
 train_model_ckpts/
-train_model_configs/
+# train_model_configs/

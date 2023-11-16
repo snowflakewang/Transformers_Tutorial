@@ -1,0 +1,10 @@
+{
+    "seed": 42,
+    "lr": 1e-4,
+    "batch_size": 512,
+    "max_epoch": 10,
+    "base_model_ckpt": "bert-base-chinese",
+    "data_path": "data/afqmc_public",
+    "save_path": "model_pairwise_cls_ckpts"
+    
+}

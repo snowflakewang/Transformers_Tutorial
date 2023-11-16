@@ -64,7 +64,10 @@ class BertForPairwiseCLS(BertPreTrainedModel):
         super().__init__(config)
         self.bert = BertModel(config, add_pooling_layer=False)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(768, 2)
+        # self.classifier = nn.Linear(768, 2)
+        self.classifier = [nn.Linear(768, 384), nn.ReLU(), nn.Linear(384, 384), 
+            nn.ReLU(), nn.Linear(384, 2)]
+        self.classifier = nn.Sequential(*self.classifier)
         self.post_init()
     
     def forward(self, x):
@@ -101,8 +104,9 @@ def test_loop(options, dataloader, model, mode='Test'):
     size = len(dataloader.dataset)
     correct = 0
 
-    ckpts = sorted(os.listdir(options.save_path))
-    model.load_state_dict(torch.load('%s/%s'%(options.save_path, ckpts[-1])))
+    if mode == 'Test':
+        ckpts = sorted(os.listdir(options.save_path))
+        model.load_state_dict(torch.load('%s/%s'%(options.save_path, ckpts[-1])))
     model.eval()
     with torch.no_grad():
         for X, y in dataloader:
@@ -165,16 +169,16 @@ if __name__ == '__main__':
         num_warmup_steps=0,
         num_training_steps=epoch_num*len(train_dataloader),
     )
-
+    
     total_loss = 0.
     best_acc = 0.
     for t in range(epoch_num):
         print(f"Epoch {t+1}/{epoch_num}\n-------------------------------")
         total_loss = train_loop(train_dataloader, model, loss_fn, optimizer, lr_scheduler, t+1, total_loss)
-        valid_acc = test_loop(valid_dataloader, model, mode='Valid')
+        valid_acc = test_loop(options, valid_dataloader, model, mode='Valid')
         if valid_acc > best_acc:
             best_acc = valid_acc
             print('saving new weights...\n')
             torch.save(model.state_dict(), f'{options.save_path}/epoch_{t+1}_valid_acc_{(100*valid_acc):0.1f}_model_weights.pt')
     
-    test_loop(options, test_dataloader, model, mode='Test')
+    test_loop(options, valid_dataloader, model, mode='Test')
