@@ -152,6 +152,7 @@ def test_loop(options, dataloader, model, mode='Test'):
     correct = 0
 
     if mode == 'Test':
+        '''
         ckpts = sorted(os.listdir(options.save_path))
         ckpts_dic = {}
         for ckpt in ckpts:
@@ -160,6 +161,8 @@ def test_loop(options, dataloader, model, mode='Test'):
         ckpt = ckpts_dic[best_ckpt_id]
 
         model.load_state_dict(torch.load('%s/%s'%(options.save_path, ckpt)))
+        '''
+        model.load_state_dict(torch.load('%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt)))
         print('[INFO] Load %s ckpt for test'%ckpts_dic[best_ckpt_id])
     model.eval()
     with torch.no_grad():
@@ -241,6 +244,9 @@ if __name__ == '__main__':
         if valid_acc > best_acc:
             best_acc = valid_acc
             print('saving new weights...\n')
-            torch.save(model.state_dict(), f'{options.save_path}/epoch_{t+1}_valid_acc_{(100*valid_acc):0.1f}_model_weights.pt')
+            torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt))
+            with open('%s/log.txt'%save_path, 'w') as w:
+                w.write('best checkpoint epoch: %d\n'%t)
+                w.write('best checkpoint acc: %.05f'%best_acc)
     
     test_loop(options, valid_dataloader, model, mode='Test')
