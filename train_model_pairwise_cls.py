@@ -81,7 +81,7 @@ class BertForPairwiseCLS(BertPreTrainedModel):
     def forward(self, x):
         outputs = self.bert(**x) # x['input_ids'].shape=[4, 39]
         # using last_hidden_state means we do not use the original classifier and initialize a new one
-        cls_vectors = outputs.last_hidden_state[:, 0, :] # outputs.last_hidden_state.shape=[4, 39, 768]
+        cls_vectors = outputs.last_hidden_state[:, 0, :] # outputs.last_hidden_state.shape=[b, 39, 768]
         cls_vectors = self.dropout(cls_vectors)
         logits = self.classifier(cls_vectors)
         return logits
@@ -90,7 +90,7 @@ class SentenceTransformer(nn.Module):
     def __init__(self, checkpoint, config):
         super().__init__()
         self.auto_model = AutoModel.from_pretrained(checkpoint)
-        self.classifier = [nn.Linear(768, 768), nn.ReLU(), nn.Linear(768, 768), 
+        self.classifier = [nn.Linear(768, 768), 
             nn.ReLU(), nn.Linear(768, 2)]
         self.classifier = nn.Sequential(*self.classifier)
     
@@ -103,6 +103,7 @@ class SentenceTransformer(nn.Module):
         return logits
     
     def mean_pooling(self, model_output, attention_mask):
+        # model_output[0] means model_output.last_hidden_state
         token_embeddings = model_output[0] #First element of model_output contains all token embeddings
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
         return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
@@ -204,7 +205,7 @@ if __name__ == '__main__':
         raise Exception('[INFO] Invalid base model checkpoint')
 
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.99), eps=1e-15)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-8)
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
