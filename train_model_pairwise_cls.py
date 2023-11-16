@@ -246,8 +246,8 @@ if __name__ == '__main__':
             best_acc = valid_acc
             print('saving new weights...\n')
             torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt))
-            with open('%s/log.txt'%save_path, 'w') as w:
-                w.write('best checkpoint epoch: %d\n'%t)
+            with open('%s/log.txt'%options.save_path, 'w') as w:
+                w.write('best checkpoint epoch: %d\n'%(t + 1))
                 w.write('best checkpoint acc: %.05f'%best_acc)
     
     test_loop(options, valid_dataloader, model, mode='Test')
