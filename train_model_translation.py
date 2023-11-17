@@ -164,7 +164,7 @@ if __name__ == '__main__':
     train_data, valid_data = random_split(data, [train_set_size, valid_set_size])
     test_data = TRANS(options, mode='test')
 
-    model_checkpoint = "Helsinki-NLP/opus-mt-zh-en"
+    model_checkpoint = options.base_model_ckpt
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
     model = model.to(device)

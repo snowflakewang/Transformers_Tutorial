@@ -205,8 +205,7 @@ if __name__ == '__main__':
     epoch_num = options.max_epoch
 
     checkpoint = options.base_model_ckpt
-    print('[INFO] Download / Load %s as the base model'%options.base_model_ckpt)
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    print('[INFO] Download / Load %s as the base model'%checkpoint)
 
     train_data = AFQMC(options, mode='Train')
     valid_data = AFQMC(options, mode='Valid')
@@ -216,12 +215,17 @@ if __name__ == '__main__':
     valid_dataloader= DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
     test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
 
-    config = AutoConfig.from_pretrained(checkpoint)
     if options.base_model_ckpt == 'bert-base-chinese':
+        config = AutoConfig.from_pretrained(checkpoint)
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         model = BertForPairwiseCLS.from_pretrained(checkpoint, config=config).to(device)
     elif options.base_model_ckpt == 'sentence-transformers/LaBSE':
+        config = AutoConfig.from_pretrained(checkpoint)
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         model = SentenceTransformerLaBSE(checkpoint, config).to(device)
     elif options.base_model_ckpt == 'xlm-roberta-large':
+        config = AutoConfig.from_pretrained(checkpoint)
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint)
         model = XLMRoBERTa(checkpoint, config).to(device)
     else:
         raise Exception('[INFO] Invalid base model checkpoint')
