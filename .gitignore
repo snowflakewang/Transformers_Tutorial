@@ -148,3 +148,4 @@ dmypy.json
 train_model_ckpts/
 # train_model_configs/
 tmp.py
+data/
