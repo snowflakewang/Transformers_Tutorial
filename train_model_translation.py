@@ -10,6 +10,9 @@ from tqdm.auto import tqdm
 import json
 
 import argparse
+import transformers
+import pdb
+import torch.nn as nn
 
 def seed_everything(seed=1029):
     random.seed(seed)
@@ -47,7 +50,25 @@ class TRANS(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-def collote_fn(batch_samples, tokenizer):
+# invalid implementation
+class MarianMTModelFinetuned(nn.Module):
+    def __init__(self, checkpoint):
+        super(MarianMTModelFinetuned, self).__init__()
+        self.marian_mt_model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint)
+        self.decoder_vocab_size = self.marian_mt_model.config.decoder_vocab_size
+        print(self.decoder_vocab_size)
+        self.translator = [nn.ReLU(), nn.Linear(self.decoder_vocab_size, self.decoder_vocab_size)]
+        self.translator = nn.Sequential(*self.translator)
+    
+    def forward(self, input_ids, attention_mask, decoder_input_ids, labels):
+        lm_logits = self.marian_mt_model(input_ids, attention_mask, decoder_input_ids, labels).logits
+        # pdb.set_trace()
+        lm_logits = self.translator(lm_logits)
+        loss_fct = nn.CrossEntropyLoss()
+        masked_lm_loss = loss_fct(lm_logits.view(-1, self.decoder_vocab_size), labels.view(-1))
+        return transformers.modeling_outputs.Seq2SeqLMOutput(loss=masked_lm_loss, logits=lm_logits)
+
+def collote_fn(batch_samples, model, tokenizer, options):
     batch_inputs, batch_targets = [], []
     for sample in batch_samples:
         batch_inputs.append(sample['chinese'])
@@ -67,7 +88,10 @@ def collote_fn(batch_samples, tokenizer):
             truncation=True, 
             return_tensors="pt"
         )["input_ids"]
-        batch_data['decoder_input_ids'] = model.prepare_decoder_input_ids_from_labels(labels)
+        if options.full_tuning and options.base_model_ckpt == 'Helsinki-NLP/opus-mt-zh-en':
+            batch_data['decoder_input_ids'] = model.prepare_decoder_input_ids_from_labels(labels)
+        elif options.base_model_ckpt == 'Helsinki-NLP/opus-mt-zh-en':
+            batch_data['decoder_input_ids'] = model.marian_mt_model.prepare_decoder_input_ids_from_labels(labels)
         end_token_index = torch.where(labels == tokenizer.eos_token_id)[1]
         for idx, end_idx in enumerate(end_token_index):
             labels[idx][end_idx+1:] = -100
@@ -82,7 +106,7 @@ def train_loop(dataloader, model, optimizer, lr_scheduler, epoch, total_loss):
     model.train()
     for batch, batch_data in enumerate(dataloader, start=1):
         batch_data = batch_data.to(device)
-        outputs = model(**batch_data)
+        outputs = model(**batch_data) # outputs.logits.shape=[b, 51, num_token_classes]=[b, 51, 65001]
         loss = outputs.loss
 
         optimizer.zero_grad()
@@ -102,7 +126,10 @@ def test_loop(options, dataloader, model, mode='test'):
     preds, labels = [], []
 
     if mode == 'test':
-        model.load_state_dict(torch.load('%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
+        if options.full_tuning:
+            model.load_state_dict(torch.load('%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
+        else:
+            model.translator.load_state_dict(torch.load('%s/%s_head_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
     
     model.eval()
     with torch.no_grad():
@@ -135,6 +162,7 @@ if __name__ == '__main__':
     parser.add_argument('--base_model_ckpt', type=str, default='Helsinki-NLP/opus-mt-zh-en', help='ckpt for base model')
     parser.add_argument('--data_path', type=str, default='data/translation2019zh', help='dataset path')
     parser.add_argument('--save_path', type=str, default='model_translation_ckpts', help='path to save new ckpts')
+    parser.add_argument('--full_tuning', type=bool, default=False, help='train all parameters or only train the head')
     options = parser.parse_args()
 
     if options.config is not None:
@@ -177,19 +205,32 @@ if __name__ == '__main__':
         MarianTokenizer(name_or_path='Helsinki-NLP/opus-mt-zh-en', vocab_size=65001, model_max_length=512, is_fast=False, padding_side='right', 
         truncation_side='right', special_tokens={'eos_token': '</s>', 'unk_token': '<unk>', 'pad_token': '<pad>'}, clean_up_tokenization_spaces=True)
         '''
+        # model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+        if options.full_tuning:
+            model = transformers.MarianMTModel.from_pretrained(model_checkpoint)
+        else:
+            raise Exception('[INFO] Under construction')
+            model = MarianMTModelFinetuned(model_checkpoint)
+    elif options.base_model_ckpt == 'facebook/nllb-200-distilled-600M':
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+        # model = AutoModel.from_pretrained(model_checkpoint)
     else:
         raise Exception('[INFO] Invalid base model checkpoint')
-    print(model)
+    # print(tokenizer)
+    # print(model)
     model = model.to(device)
 
-    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=lambda x: collote_fn(x, tokenizer))
-    valid_dataloader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
-    test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, tokenizer))
+    train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=lambda x: collote_fn(x, model, tokenizer, options))
+    valid_dataloader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, model, tokenizer, options))
+    test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=False, collate_fn=lambda x: collote_fn(x, model, tokenizer, options))
 
     bleu = BLEU()
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    if options.full_tuning:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    else:
+        optimizer = torch.optim.AdamW(model.translator.parameters(), lr=learning_rate)
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
@@ -206,10 +247,13 @@ if __name__ == '__main__':
         if valid_bleu > best_bleu:
             best_bleu = valid_bleu
             print('saving new weights...\n')
-            torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
+            if options.full_tuning:
+                torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
+            else:
+                torch.save(model.translator.state_dict(), '%s/%s_head_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
             with open('%s/log.txt'%options.save_path, 'w') as w:
                 w.write('best checkpoint epoch: %d\n'%(t + 1))
-                w.write('best checkpoint acc: %.05f'%best_acc)
+                w.write('best checkpoint acc: %.05f'%best_bleu)
 
     test_loop(options, dataloader, model, mode='test')
     
