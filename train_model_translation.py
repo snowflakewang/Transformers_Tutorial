@@ -9,6 +9,8 @@ from sacrebleu.metrics import BLEU
 from tqdm.auto import tqdm
 import json
 
+import argparse
+
 def seed_everything(seed=1029):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -95,28 +97,32 @@ def train_loop(dataloader, model, optimizer, lr_scheduler, epoch, total_loss):
 
 bleu = BLEU()
 
-def test_loop(dataloader, model):
+def test_loop(options, dataloader, model, mode='test'):
+    assert mode in ['valid', 'test']
     preds, labels = [], []
+
+    if mode == 'test':
+        model.load_state_dict(torch.load('%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
     
     model.eval()
-    for batch_data in tqdm(dataloader):
-        batch_data = batch_data.to(device)
-        with torch.no_grad():
+    with torch.no_grad():
+        for batch_data in tqdm(dataloader):
+            batch_data = batch_data.to(device)
             generated_tokens = model.generate(
                 batch_data["input_ids"],
                 attention_mask=batch_data["attention_mask"],
                 max_length=max_target_length,
             ).cpu().numpy()
-        label_tokens = batch_data["labels"].cpu().numpy()
-        
-        decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-        label_tokens = np.where(label_tokens != -100, label_tokens, tokenizer.pad_token_id)
-        decoded_labels = tokenizer.batch_decode(label_tokens, skip_special_tokens=True)
+            label_tokens = batch_data["labels"].cpu().numpy()
+            
+            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+            label_tokens = np.where(label_tokens != -100, label_tokens, tokenizer.pad_token_id)
+            decoded_labels = tokenizer.batch_decode(label_tokens, skip_special_tokens=True)
 
-        preds += [pred.strip() for pred in decoded_preds]
-        labels += [[label.strip()] for label in decoded_labels]
-    bleu_score = bleu.corpus_score(preds, labels).score
-    print(f"BLEU: {bleu_score:>0.2f}\n")
+            preds += [pred.strip() for pred in decoded_preds]
+            labels += [[label.strip()] for label in decoded_labels]
+        bleu_score = bleu.corpus_score(preds, labels).score
+    print(f"BLEU: {bleu_score:>0.5f}\n")
     return bleu_score
 
 if __name__ == '__main__':
@@ -165,8 +171,16 @@ if __name__ == '__main__':
     test_data = TRANS(options, mode='test')
 
     model_checkpoint = options.base_model_ckpt
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+    if options.base_model_ckpt == 'Helsinki-NLP/opus-mt-zh-en':
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+        '''
+        MarianTokenizer(name_or_path='Helsinki-NLP/opus-mt-zh-en', vocab_size=65001, model_max_length=512, is_fast=False, padding_side='right', 
+        truncation_side='right', special_tokens={'eos_token': '</s>', 'unk_token': '<unk>', 'pad_token': '<pad>'}, clean_up_tokenization_spaces=True)
+        '''
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+    else:
+        raise Exception('[INFO] Invalid base model checkpoint')
+    print(model)
     model = model.to(device)
 
     train_dataloader = DataLoader(train_data, batch_size=batch_size, shuffle=True, collate_fn=lambda x: collote_fn(x, tokenizer))
@@ -188,14 +202,235 @@ if __name__ == '__main__':
     for t in range(epoch_num):
         print(f"Epoch {t+1}/{epoch_num}\n-------------------------------")
         total_loss = train_loop(train_dataloader, model, optimizer, lr_scheduler, t+1, total_loss)
-        valid_bleu = test_loop(valid_dataloader, model)
+        valid_bleu = test_loop(options, valid_dataloader, model, mode='valid')
         if valid_bleu > best_bleu:
             best_bleu = valid_bleu
             print('saving new weights...\n')
-            torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt))
+            torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
             with open('%s/log.txt'%options.save_path, 'w') as w:
                 w.write('best checkpoint epoch: %d\n'%(t + 1))
                 w.write('best checkpoint acc: %.05f'%best_acc)
+
+    test_loop(options, dataloader, model, mode='test')
+    
+    '''
+    MarianMTModel(
+    (model): MarianModel(
+        (shared): Embedding(65001, 512, padding_idx=65000)
+        (encoder): MarianEncoder(
+        (embed_tokens): Embedding(65001, 512, padding_idx=65000)
+        (embed_positions): MarianSinusoidalPositionalEmbedding(512, 512)
+        (layers): ModuleList(
+            (0): MarianEncoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (activation_fn): SiLUActivation()
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (1): MarianEncoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (activation_fn): SiLUActivation()
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (2): MarianEncoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (activation_fn): SiLUActivation()
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (3): MarianEncoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (activation_fn): SiLUActivation()
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (4): MarianEncoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (activation_fn): SiLUActivation()
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (5): MarianEncoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (activation_fn): SiLUActivation()
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+        )
+        )
+        (decoder): MarianDecoder(
+        (embed_tokens): Embedding(65001, 512, padding_idx=65000)
+        (embed_positions): MarianSinusoidalPositionalEmbedding(512, 512)
+        (layers): ModuleList(
+            (0): MarianDecoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (activation_fn): SiLUActivation()
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (encoder_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (encoder_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (1): MarianDecoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (activation_fn): SiLUActivation()
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (encoder_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (encoder_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (2): MarianDecoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (activation_fn): SiLUActivation()
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (encoder_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (encoder_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (3): MarianDecoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (activation_fn): SiLUActivation()
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (encoder_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (encoder_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (4): MarianDecoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (activation_fn): SiLUActivation()
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (encoder_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (encoder_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+            (5): MarianDecoderLayer(
+            (self_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (activation_fn): SiLUActivation()
+            (self_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (encoder_attn): MarianAttention(
+                (k_proj): Linear(in_features=512, out_features=512, bias=True)
+                (v_proj): Linear(in_features=512, out_features=512, bias=True)
+                (q_proj): Linear(in_features=512, out_features=512, bias=True)
+                (out_proj): Linear(in_features=512, out_features=512, bias=True)
+            )
+            (encoder_attn_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (final_layer_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            )
+        )
+        )
+    )
+    (lm_head): Linear(in_features=512, out_features=65001, bias=False)
+    )
+    '''
 
 # import json
 
