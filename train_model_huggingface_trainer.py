@@ -73,7 +73,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Pairwise Classification')
     parser.add_argument('--config', type=str, default=None, help='config file')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
-    parser.add_argument('--lr', type=float, default=1e-5, help='learning rate')
+    parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('-bs', '--batch_size', type=int, default=512)
     parser.add_argument('--max_epoch', type=int, default=10)
     parser.add_argument('--base_model_ckpt', type=str, default='bert-base-chinese', help='ckpt for base model')
@@ -117,8 +117,14 @@ if __name__ == '__main__':
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     # pdb.set_trace()
     training_args = transformers.TrainingArguments(
-        "train_model_ckpts/huggingface_trainer/%s"%options.dataset, evaluation_strategy='epoch', num_train_epochs=20,
-        learning_rate=1e-4)
+        "train_model_ckpts/huggingface_trainer/%s"%options.dataset, 
+        evaluation_strategy='epoch', 
+        num_train_epochs=options.max_epoch,
+        learning_rate=options.lr,
+        optim='adamw_torch',
+        # ['adamw_hf', 'adamw_torch', 'adamw_torch_fused', 'adamw_torch_xla', 'adamw_apex_fused', 'adafactor', 'adamw_bnb_8bit', 'adamw_anyprecision', 'sgd', 'adagrad']
+        per_device_train_batch_size=options.batch_size,
+        per_device_eval_batch_size=options.batch_size)
     model = transformers.AutoModelForSequenceClassification.from_pretrained(checkpoints, num_labels=2)
     '''
     train_data = AFQMC(options, mode='Train')
