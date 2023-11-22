@@ -1,0 +1,11 @@
+{
+    "seed": 42,
+    "lr": 1e-5,
+    "batch_size": 128,
+    "max_epoch": 20,
+    "base_model_ckpt": "bert-base-chinese",
+    "dataset": "afqmc_public",
+    "lora_rank": 4,
+    "lora_alpha": 16,
+    "lora_dropout": 0.05
+}
