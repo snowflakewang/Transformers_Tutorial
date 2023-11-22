@@ -229,6 +229,7 @@ if __name__ == '__main__':
         model = XLMRoBERTa(checkpoint, config).to(device)
     else:
         raise Exception('[INFO] Invalid base model checkpoint')
+    pdb.set_trace()
 
     loss_fn = nn.CrossEntropyLoss()
     # if only fine-tune the classifier, then just pass model.classifier.parameters() into the optimizer

@@ -4,7 +4,5 @@
     "batch_size": 128,
     "max_epoch": 20,
     "base_model_ckpt": "bert-base-chinese",
-    "data_path": "data/afqmc_public",
-    "save_path": "model_pairwise_cls_ckpts"
-    
+    "dataset": "afqmc_public"
 }

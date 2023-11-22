@@ -14,6 +14,9 @@ import transformers
 import pdb
 import torch.nn as nn
 
+import peft
+from peft import LoraConfig, TaskType
+
 def seed_everything(seed=1029):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -88,10 +91,11 @@ def collote_fn(batch_samples, model, tokenizer, options):
             truncation=True, 
             return_tensors="pt"
         )["input_ids"]
-        if options.full_tuning and options.base_model_ckpt == 'Helsinki-NLP/opus-mt-zh-en':
-            batch_data['decoder_input_ids'] = model.prepare_decoder_input_ids_from_labels(labels)
-        elif options.base_model_ckpt == 'Helsinki-NLP/opus-mt-zh-en':
-            batch_data['decoder_input_ids'] = model.marian_mt_model.prepare_decoder_input_ids_from_labels(labels)
+        if options.base_model_ckpt == 'Helsinki-NLP/opus-mt-zh-en':
+            if options.head_tuning:
+                batch_data['decoder_input_ids'] = model.marian_mt_model.prepare_decoder_input_ids_from_labels(labels)
+            else:
+                batch_data['decoder_input_ids'] = model.prepare_decoder_input_ids_from_labels(labels)
         end_token_index = torch.where(labels == tokenizer.eos_token_id)[1]
         for idx, end_idx in enumerate(end_token_index):
             labels[idx][end_idx+1:] = -100
@@ -126,10 +130,14 @@ def test_loop(options, dataloader, model, mode='test'):
     preds, labels = [], []
 
     if mode == 'test':
-        if options.full_tuning:
-            model.load_state_dict(torch.load('%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
-        else:
+        if options.head_tuning:
             model.translator.load_state_dict(torch.load('%s/%s_head_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
+        elif options.lora_tuning:
+            peft_model_id = '%s/%s_lora_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))
+            peft_config = peft.PeftConfig(peft_model_id)
+            model = peft.PeftModel.from_pretrained(model, peft_model_id)
+        else:
+            model.load_state_dict(torch.load('%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-'))))
     
     model.eval()
     with torch.no_grad():
@@ -162,7 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('--base_model_ckpt', type=str, default='Helsinki-NLP/opus-mt-zh-en', help='ckpt for base model')
     parser.add_argument('--data_path', type=str, default='data/translation2019zh', help='dataset path')
     parser.add_argument('--save_path', type=str, default='model_translation_ckpts', help='path to save new ckpts')
-    parser.add_argument('--full_tuning', type=bool, default=False, help='train all parameters or only train the head')
+    parser.add_argument('--head_tuning', type=bool, default=False, help='fine-tune all parameters')
+    parser.add_argument('--lora_tuning', type=bool, default=False, help='fine-tune parameters with trainable numbers using LoRA method')
     options = parser.parse_args()
 
     if options.config is not None:
@@ -206,11 +215,19 @@ if __name__ == '__main__':
         truncation_side='right', special_tokens={'eos_token': '</s>', 'unk_token': '<unk>', 'pad_token': '<pad>'}, clean_up_tokenization_spaces=True)
         '''
         # model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
-        if options.full_tuning:
-            model = transformers.MarianMTModel.from_pretrained(model_checkpoint)
-        else:
+        if options.head_tuning:
             raise Exception('[INFO] Under construction')
             model = MarianMTModelFinetuned(model_checkpoint)
+        elif options.lora_tuning:
+            training_args = transformers.TrainingArguments("test-trainer")
+            peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules=['q_proj', 'v_proj'], 
+                inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+            # model = transformers.MarianMTModel.from_pretrained(model_checkpoint)
+            model = peft.get_peft_model(model, peft_config)
+            model.print_trainable_parameters()
+        else:
+            model = transformers.MarianMTModel.from_pretrained(model_checkpoint)
     elif options.base_model_ckpt == 'facebook/nllb-200-distilled-600M':
         tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
@@ -227,10 +244,10 @@ if __name__ == '__main__':
 
     bleu = BLEU()
 
-    if options.full_tuning:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    else:
+    if options.head_tuning:
         optimizer = torch.optim.AdamW(model.translator.parameters(), lr=learning_rate)
+    else:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
@@ -242,20 +259,25 @@ if __name__ == '__main__':
     best_bleu = 0.
     for t in range(epoch_num):
         print(f"Epoch {t+1}/{epoch_num}\n-------------------------------")
-        total_loss = train_loop(train_dataloader, model, optimizer, lr_scheduler, t+1, total_loss)
-        valid_bleu = test_loop(options, valid_dataloader, model, mode='valid')
-        if valid_bleu > best_bleu:
-            best_bleu = valid_bleu
-            print('saving new weights...\n')
-            if options.full_tuning:
-                torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
-            else:
-                torch.save(model.translator.state_dict(), '%s/%s_head_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
-            with open('%s/log.txt'%options.save_path, 'w') as w:
-                w.write('best checkpoint epoch: %d\n'%(t + 1))
-                w.write('best checkpoint acc: %.05f'%best_bleu)
+        if options.lora_tuning:
+            transformers.Trainer(model=model, args=training_args, train_dataset=train_data, eval_dataset=valid_data, data_collator=collote_fn, tokenizer=tokenizer)
+        else:
+            total_loss = train_loop(train_dataloader, model, optimizer, lr_scheduler, t+1, total_loss)
+            valid_bleu = test_loop(options, valid_dataloader, model, mode='valid')
+            if valid_bleu > best_bleu:
+                best_bleu = valid_bleu
+                print('saving new weights...\n')
+                if options.head_tuning:
+                    torch.save(model.translator.state_dict(), '%s/%s_head_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
+                elif options.lora_tuning:
+                    model.save_pretrained('%s/%s_lora_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
+                else:
+                    torch.save(model.state_dict(), '%s/%s_finetuned_weights.pt'%(options.save_path, options.base_model_ckpt.replace('/', '-')))
+                with open('%s/log.txt'%options.save_path, 'w') as w:
+                    w.write('best checkpoint epoch: %d\n'%(t + 1))
+                    w.write('best checkpoint acc: %.05f'%best_bleu)
 
-    test_loop(options, dataloader, model, mode='test')
+    test_loop(options, test_dataloader, model, mode='test')
     
     '''
     MarianMTModel(
