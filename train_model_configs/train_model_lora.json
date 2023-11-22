@@ -1,7 +1,7 @@
 {
     "seed": 42,
-    "lr": 1e-5,
-    "batch_size": 128,
+    "lr": 1e-3,
+    "batch_size": 512,
     "max_epoch": 20,
     "base_model_ckpt": "bert-base-chinese",
     "dataset": "afqmc_public",
